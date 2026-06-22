@@ -19,6 +19,11 @@ export const authConfig = {
         return true;
       }
 
+      // Force first-time admin to set a secure password before anything else.
+      if (isLoggedIn && auth.user.mustSetPassword && !isOnboardingRoute) {
+        return Response.redirect(new URL('/onboarding/set-password', nextUrl));
+      }
+
       // If logged in but no username (meaning they haven't finished onboarding)
       // Force them to onboarding.
       if (isLoggedIn && !auth.user.username && !isOnboardingRoute) {
@@ -31,11 +36,11 @@ export const authConfig = {
       if (user) {
         token.id = user.id;
         token.username = user.username;
+        token.mustSetPassword = user.mustSetPassword;
       }
-      
-      // Update token on runtime modifications (if we call update() on session)
-      if (trigger === "update" && session?.username) {
-        token.username = session.username;
+      if (trigger === "update") {
+        if (session?.username) token.username = session.username;
+        if (session?.mustSetPassword !== undefined) token.mustSetPassword = session.mustSetPassword;
       }
       return token;
     },
@@ -43,6 +48,7 @@ export const authConfig = {
       if (session.user) {
         session.user.id = token.id as string;
         session.user.username = token.username as string | undefined;
+        session.user.mustSetPassword = token.mustSetPassword as boolean | undefined;
       }
       return session;
     }

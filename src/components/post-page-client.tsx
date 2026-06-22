@@ -6,6 +6,8 @@ import {
   ArrowLeft,
   Bookmark,
   BookmarkCheck,
+  Calendar,
+  CalendarCheck,
   ChevronDown,
   ChevronUp,
   Ellipsis,
@@ -22,6 +24,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { cn, formatKarma } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
 import {
   createCommentAction,
   deleteCommentAction,
@@ -31,8 +34,17 @@ import {
   voteCommentAction,
 } from "@/actions/comments";
 import { votePostAction } from "@/actions/posts";
+import { rsvpEventAction } from "@/actions/events";
 
 // ─── Types ─────────────────────────────────────────────────────────────────────
+
+type EventInfo = {
+  id: string;
+  startTime: string;
+  endTime: string;
+  participantCount: number;
+  isParticipating: boolean;
+};
 
 type PostData = {
   id: string;
@@ -48,6 +60,7 @@ type PostData = {
   authorKarma: number;
   communityName: string;
   commentCount: number;
+  event: EventInfo | null;
 };
 
 type CommentData = {
@@ -55,6 +68,7 @@ type CommentData = {
   body: string | null;
   isPinned: boolean;
   isDeleted: boolean;
+  removedByMod: boolean;
   upvotes: number;
   downvotes: number;
   createdAt: string;
@@ -432,7 +446,7 @@ function CommentThread({
             {/* Body */}
             {node.isDeleted ? (
               <p className="mt-1 text-sm italic text-muted-foreground">
-                This comment was deleted.
+                {node.removedByMod ? "Removed by moderation." : "This comment was deleted."}
               </p>
             ) : isEditing ? (
               <div className="mt-2 space-y-2">
@@ -468,9 +482,10 @@ function CommentThread({
                 </div>
               </div>
             ) : (
-              <p className="mt-1 break-words text-sm leading-relaxed whitespace-pre-wrap">
-                {node.body}
-              </p>
+              <MarkdownContent
+                content={node.body ?? ""}
+                className="mt-1"
+              />
             )}
 
             {/* Report form */}
@@ -635,12 +650,30 @@ export function PostPageClient({
   const [postUpvotes, setPostUpvotes] = useState(post.upvotes);
   const [postDownvotes, setPostDownvotes] = useState(post.downvotes);
   const [isPostVoting, startPostVoteTransition] = useTransition();
+  const [eventState, setEventState] = useState(post.event);
+  const [isRsvping, startRsvpTransition] = useTransition();
 
   const commentTree = buildTree(comments);
   const postScore = postUpvotes - postDownvotes;
 
   function onGuestAction() {
     setShowAuthModal(true);
+  }
+
+  function handleRsvp() {
+    if (!currentUserId || !eventState) return;
+    const prev = eventState;
+    setEventState({
+      ...eventState,
+      isParticipating: !eventState.isParticipating,
+      participantCount: eventState.isParticipating
+        ? eventState.participantCount - 1
+        : eventState.participantCount + 1,
+    });
+    startRsvpTransition(async () => {
+      const result = await rsvpEventAction(eventState.id, post.communityName);
+      if (result.error) setEventState(prev);
+    });
   }
 
   function handlePostVote(val: 1 | -1) {
@@ -779,17 +812,39 @@ export function PostPageClient({
                 </h1>
 
                 {post.body && (
-                  <p className="mt-2 break-words text-sm leading-relaxed text-muted-foreground whitespace-pre-wrap">
-                    {post.body}
-                  </p>
+                  <MarkdownContent
+                    content={post.body}
+                    className="mt-2 text-muted-foreground"
+                  />
                 )}
 
-                <div className="mt-3 flex items-center gap-1 text-xs text-muted-foreground">
-                  <MessageSquare className="h-3.5 w-3.5" />
-                  <span>
+                <div className="mt-3 flex items-center gap-3 text-xs text-muted-foreground">
+                  <span className="flex items-center gap-1">
+                    <MessageSquare className="h-3.5 w-3.5" />
                     {post.commentCount}{" "}
                     {post.commentCount === 1 ? "comment" : "comments"}
                   </span>
+                  {eventState && (
+                    <button
+                      onClick={handleRsvp}
+                      disabled={isRsvping || !currentUserId}
+                      className={cn(
+                        "flex items-center gap-1 transition-colors disabled:pointer-events-none disabled:opacity-50",
+                        eventState.isParticipating
+                          ? "font-medium text-primary"
+                          : "hover:text-foreground"
+                      )}
+                    >
+                      {eventState.isParticipating
+                        ? <CalendarCheck className="h-3.5 w-3.5" />
+                        : <Calendar className="h-3.5 w-3.5" />
+                      }
+                      {eventState.isParticipating ? "Going" : "RSVP"}
+                      {eventState.participantCount > 0 && (
+                        <span>· {eventState.participantCount}</span>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             </div>

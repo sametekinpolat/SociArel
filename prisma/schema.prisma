@@ -53,6 +53,24 @@ enum ModActionType {
   BAN_USER
   MUTE_USER
   UPDATE_SETTINGS
+  UNBAN_USER
+  UNMUTE_USER
+  PIN_POST
+  UNPIN_POST
+  ASSIGN_MODERATOR
+  REMOVE_MODERATOR
+  UPDATE_MODERATOR_PERMISSIONS
+  CLOSE_COMMUNITY
+  REOPEN_COMMUNITY
+  DELETE_COMMUNITY
+  TRANSFER_COMMUNITY_OWNERSHIP
+  RESOLVE_REPORT
+  DISMISS_REPORT
+}
+
+enum CommunityStatus {
+  ACTIVE
+  CLOSED
 }
 
 enum InviteStatus {
@@ -72,7 +90,8 @@ model User {
   email          String?   @unique
   emailVerified  DateTime?
   image          String?
-  passwordHash   String?
+  passwordHash      String?
+  mustSetPassword   Boolean   @default(false)
   karmaScore     Int       @default(0) // Kept for legacy; use postKarma + commentKarma for display
   postKarma      Int       @default(0)
   commentKarma   Int       @default(0)
@@ -186,14 +205,15 @@ model GlobalModerator {
 
 
 model Community {
-  id            String   @id @default(uuid()) @db.Uuid
-  name          String   @unique
+  id            String          @id @default(uuid()) @db.Uuid
+  name          String          @unique
   description   String?
-  ownerId       String   @db.Uuid
-  isUserProfile Boolean  @default(false)
-  linkedUserId  String?  @unique @db.Uuid
-  isNsfw        Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  ownerId       String          @db.Uuid
+  isUserProfile Boolean         @default(false)
+  linkedUserId  String?         @unique @db.Uuid
+  isNsfw        Boolean         @default(false)
+  status        CommunityStatus @default(ACTIVE)
+  createdAt     DateTime        @default(now())
 
   owner      User  @relation("CommunityOwner", fields: [ownerId], references: [id])
   linkedUser User? @relation("UserLinkedCommunity", fields: [linkedUserId], references: [id], onDelete: Cascade)
@@ -280,6 +300,9 @@ model CommunityRestriction {
   community Community @relation(fields: [communityId], references: [id], onDelete: Cascade)
   user      User      @relation("RestrictedUser", fields: [userId], references: [id], onDelete: Cascade)
   moderator User      @relation("ModWhoRestricted", fields: [moderatorId], references: [id])
+
+  @@index([communityId])
+  @@index([userId])
 }
 
 model ModLog {
@@ -298,6 +321,9 @@ model ModLog {
   targetUser    User?     @relation("TargetedUser", fields: [targetUserId], references: [id])
   targetPost    Post?     @relation(fields: [targetPostId], references: [id])
   targetComment Comment?  @relation(fields: [targetCommentId], references: [id])
+
+  @@index([communityId])
+  @@index([moderatorId])
 }
 
 model UserBlock {
@@ -360,6 +386,8 @@ model Post {
   media       Media[]
   modLogs     ModLog[]
   event       Event?
+
+  @@index([communityId, status, isDeleted])
 }
 
 model Comment {
@@ -372,7 +400,8 @@ model Comment {
   upvotes         Int      @default(0)
   downvotes       Int      @default(0)
   isDeleted       Boolean  @default(false)
-  
+  removedByMod    Boolean  @default(false)
+
   searchVector    Unsupported("tsvector")?
 
   createdAt       DateTime @default(now())
@@ -392,6 +421,8 @@ model Comment {
   notifications Notification[]
   media         Media[]
   modLogs       ModLog[]
+
+  @@index([postId, isDeleted])
 }
 
 model PostEditHistory {
@@ -481,6 +512,8 @@ model Report {
   rule         CommunityRule? @relation(fields: [ruleId], references: [id])
 
   // Note: Enforce CHECK (num_nonnulls(reportedUserId, postId, commentId) = 1) via raw SQL migration
+  @@index([status])
+  @@index([communityId])
 }
 
 // -----------------------------------------------------------------------------

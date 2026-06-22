@@ -47,6 +47,18 @@ export default async function PostPage({ params }: { params: Params }) {
         _count: {
           select: { comments: { where: { isDeleted: false } } },
         },
+        event: {
+          select: {
+            id: true,
+            startTime: true,
+            endTime: true,
+            _count: { select: { participants: true } },
+            participants: {
+              where: { userId: currentUserId || "00000000-0000-0000-0000-000000000000" },
+              select: { userId: true },
+            },
+          },
+        },
       },
     }),
     currentUserId
@@ -68,6 +80,7 @@ export default async function PostPage({ params }: { params: Params }) {
       body: true,
       isPinned: true,
       isDeleted: true,
+      removedByMod: true,
       upvotes: true,
       downvotes: true,
       createdAt: true,
@@ -113,6 +126,15 @@ export default async function PostPage({ params }: { params: Params }) {
     authorKarma: post.user.postKarma + post.user.commentKarma,
     communityName: post.community.name,
     commentCount: post._count.comments,
+    event: post.event
+      ? {
+          id: post.event.id,
+          startTime: post.event.startTime.toISOString(),
+          endTime: post.event.endTime.toISOString(),
+          participantCount: post.event._count.participants,
+          isParticipating: post.event.participants.length > 0,
+        }
+      : null,
   };
 
   const serializedComments = rawComments.map((c) => ({
@@ -120,6 +142,7 @@ export default async function PostPage({ params }: { params: Params }) {
     body: c.isDeleted ? null : c.body,
     isPinned: c.isPinned,
     isDeleted: c.isDeleted,
+    removedByMod: c.removedByMod,
     upvotes: c.upvotes,
     downvotes: c.downvotes,
     createdAt: c.createdAt.toISOString(),

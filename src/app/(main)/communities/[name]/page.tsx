@@ -3,6 +3,7 @@ import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
 import { PostStatus } from "@/generated/prisma/client";
 import { CommunityPageClient } from "@/components/communities/community-page-client";
+import { getModerationContext } from "@/lib/moderation/permissions";
 
 export const dynamic = "force-dynamic";
 
@@ -46,9 +47,10 @@ export default async function CommunityPage({
   let isMember = false;
   let canManageSettings = false;
   let canManagePosts = false;
+  let hasModerationAccess = false;
 
   if (session?.user?.id) {
-    const [membership, modRecord] = await Promise.all([
+    const [membership, modCtx] = await Promise.all([
       prisma.communityMember.findUnique({
         where: {
           userId_communityId: {
@@ -58,20 +60,13 @@ export default async function CommunityPage({
         },
         select: { userId: true },
       }),
-      prisma.communityModerator.findUnique({
-        where: {
-          userId_communityId: {
-            userId: session.user.id,
-            communityId: community.id,
-          },
-        },
-        select: { canManageSettings: true, canManagePosts: true },
-      }),
+      getModerationContext(session.user.id, community.id),
     ]);
 
     isMember = !!membership;
-    canManageSettings = modRecord?.canManageSettings ?? false;
-    canManagePosts = modRecord?.canManagePosts ?? false;
+    canManageSettings = modCtx.canManageSettings;
+    canManagePosts = modCtx.canManagePosts;
+    hasModerationAccess = modCtx.hasAnyAccess;
   }
 
   const [posts, moderators, upcomingEvents] = await Promise.all([
@@ -92,6 +87,18 @@ export default async function CommunityPage({
           select: { voteValue: true },
         },
         _count: { select: { comments: true } },
+        event: {
+          select: {
+            id: true,
+            startTime: true,
+            endTime: true,
+            _count: { select: { participants: true } },
+            participants: {
+              where: { userId: currentUserId || "00000000-0000-0000-0000-000000000000" },
+              select: { userId: true },
+            },
+          },
+        },
       },
       take: 25,
     }),
@@ -152,6 +159,15 @@ export default async function CommunityPage({
         flair: p.flair
           ? { name: p.flair.name, colorHex: p.flair.colorHex }
           : null,
+        event: p.event
+          ? {
+              id: p.event.id,
+              startTime: p.event.startTime.toISOString(),
+              endTime: p.event.endTime.toISOString(),
+              participantCount: p.event._count.participants,
+              isParticipating: p.event.participants.length > 0,
+            }
+          : null,
       }))}
       moderators={moderators.map((m) => ({
         userId: m.userId,
@@ -171,6 +187,7 @@ export default async function CommunityPage({
       isMember={isMember}
       canManageSettings={canManageSettings}
       canManagePosts={canManagePosts}
+      hasModerationAccess={hasModerationAccess}
       currentSort={currentSort}
       currentUserId={currentUserId || null}
     />

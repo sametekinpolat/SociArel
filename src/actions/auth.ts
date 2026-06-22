@@ -1,6 +1,6 @@
 "use server";
 
-import { signIn, signOut } from "@/auth";
+import { signIn, signOut, auth } from "@/auth";
 import { AuthError } from "next-auth";
 import { prisma } from "@/lib/prisma";
 import bcrypt from "bcryptjs";
@@ -238,6 +238,39 @@ export async function completeOnboardingAction(formData: FormData) {
     console.error("Onboarding error:", err);
     return { error: "Something went wrong during onboarding." };
   }
+}
+
+export async function setPasswordAction(formData: FormData) {
+  const session = await auth();
+  if (!session?.user?.id) return { error: "Not authenticated." };
+
+  const user = await prisma.user.findUnique({
+    where: { id: session.user.id },
+    select: { mustSetPassword: true },
+  });
+
+  if (!user?.mustSetPassword) return { error: "Not allowed." };
+
+  const password = formData.get("password") as string;
+  const confirm = formData.get("confirm") as string;
+
+  if (!password || password.length < 12) {
+    return { error: "Password must be at least 12 characters." };
+  }
+  if (!/[A-Z]/.test(password) || !/[a-z]/.test(password) || !/[0-9]/.test(password)) {
+    return { error: "Password must contain uppercase, lowercase, and a number." };
+  }
+  if (password !== confirm) {
+    return { error: "Passwords do not match." };
+  }
+
+  const hash = await bcrypt.hash(password, 12);
+  await prisma.user.update({
+    where: { id: session.user.id },
+    data: { passwordHash: hash, mustSetPassword: false },
+  });
+
+  return { success: true };
 }
 
 

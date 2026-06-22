@@ -4,7 +4,7 @@ import { revalidatePath } from "next/cache";
 import { z } from "zod";
 import { auth } from "@/auth";
 import { prisma } from "@/lib/prisma";
-import { PostStatus } from "@/generated/prisma/client";
+import { NotificationType, PostStatus } from "@/generated/prisma/client";
 import { slugify } from "@/lib/utils";
 
 const CommentBodySchema = z.object({
@@ -35,16 +35,35 @@ export async function createCommentAction(
 
   const post = await prisma.post.findUnique({
     where: { id: postId, isDeleted: false, status: PostStatus.PUBLISHED },
-    select: { id: true, title: true, community: { select: { name: true } } },
+    select: { id: true, title: true, userId: true, community: { select: { id: true, name: true } } },
   });
   if (!post) return { error: "Post not found." };
 
+  const restriction = await prisma.communityRestriction.findFirst({
+    where: {
+      communityId: post.community.id,
+      userId: session.user.id,
+      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+    },
+    select: { type: true },
+  });
+  if (restriction) {
+    return {
+      error:
+        restriction.type === "BAN"
+          ? "You are banned from this community."
+          : "You are muted in this community and cannot comment.",
+    };
+  }
+
+  let parentAuthorId: string | null = null;
   if (parentCommentId) {
     const parent = await prisma.comment.findUnique({
       where: { id: parentCommentId, postId },
-      select: { id: true },
+      select: { id: true, userId: true },
     });
     if (!parent) return { error: "Parent comment not found." };
+    parentAuthorId = parent.userId;
   }
 
   try {
@@ -69,6 +88,22 @@ export async function createCommentAction(
           voteValue: 1,
         },
       });
+
+      const notifyUserId = parentCommentId
+        ? (parentAuthorId !== session.user.id ? parentAuthorId : null)
+        : (post.userId !== session.user.id ? post.userId : null);
+
+      if (notifyUserId) {
+        await tx.notification.create({
+          data: {
+            userId: notifyUserId,
+            actorId: session.user.id,
+            type: NotificationType.REPLY,
+            postId,
+            commentId: comment.id,
+          },
+        });
+      }
     });
 
     revalidatePath(
@@ -360,6 +395,7 @@ export async function reportCommentAction(
     where: { id: commentId, isDeleted: false },
     select: {
       id: true,
+      userId: true,
       postId: true,
       post: { select: { communityId: true } },
     },
@@ -372,6 +408,7 @@ export async function reportCommentAction(
         reporterId: session.user.id,
         communityId: comment.post.communityId,
         commentId,
+        reportedUserId: comment.userId,
         customReason: reason.trim() || null,
       },
     });

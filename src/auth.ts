@@ -129,7 +129,15 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
               { email: identifier },
               { username: identifier }
             ]
-          }
+          },
+          select: {
+            id: true,
+            name: true,
+            email: true,
+            username: true,
+            passwordHash: true,
+            mustSetPassword: true,
+          },
         });
 
         if (!user || !user.passwordHash) {
@@ -148,6 +156,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
           name: user.name,
           email: user.email,
           username: user.username ?? undefined,
+          mustSetPassword: user.mustSetPassword,
         };
       }
     })
@@ -155,17 +164,27 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
   callbacks: {
     ...authConfig.callbacks,
     async signIn({ user, account }) {
-      const dbUser = await prisma.user.findUnique({ where: { id: user.id } });
-      
+      const dbUser = await prisma.user.findUnique({
+        where: { id: user.id },
+        select: { emailVerified: true, email: true, mustSetPassword: true },
+      });
+
       // If the user's email is unverified, block them or redirect based on their provider.
       // This checks regardless of whether they have a username or not, securing github users too.
       if (dbUser && !dbUser.emailVerified) {
           if (account?.provider === "credentials") {
-             throw new Error("AccessDenied"); 
+             throw new Error("AccessDenied");
           } else {
              return `/verify-email?email=${encodeURIComponent(dbUser.email!)}`;
           }
       }
+
+      // OAuth providers don't go through authorize(), so mustSetPassword won't be on the
+      // user object — stamp it here so the jwt callback can write it into the token.
+      if (dbUser?.mustSetPassword) {
+        user.mustSetPassword = true;
+      }
+
       return true;
     },
   }

@@ -78,8 +78,9 @@ export function CreateCommunityForm({ onSuccess }: { onSuccess?: () => void }) {
           onChange={(e) => setIsNsfw(e.target.checked)}
           disabled={isPending}
           className="h-4 w-4 rounded border-input accent-primary"
+          hidden
         />
-        <Label htmlFor="community-nsfw" className="cursor-pointer">
+        <Label htmlFor="community-nsfw" className="cursor-pointer" hidden>
           Mark as NSFW
         </Label>
       </div>
