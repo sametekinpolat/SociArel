@@ -1,12 +1,13 @@
 "use client";
 
-import { useState, useTransition } from "react";
+import { startTransition, useState, useTransition } from "react";
 import Link from "next/link";
 import { useRouter, usePathname } from "next/navigation";
 import { useSession } from "next-auth/react";
 import {
   ChevronUp,
   ChevronDown,
+  Ellipsis,
   MessageSquare,
   Pin,
   Settings,
@@ -20,12 +21,21 @@ import {
   Plus,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import { Input } from "@/components/ui/input";
 import { InviteUserForm } from "@/components/communities/invite-user-form";
 import { CreateEventForm } from "@/components/communities/create-event-form";
 import { joinCommunityAction, leaveCommunityAction } from "@/actions/communities";
-import { votePostAction } from "@/actions/posts";
+import { createPostAction, deletePostAction, updatePostAction, votePostAction } from "@/actions/posts";
 import { rsvpEventAction } from "@/actions/events";
 import { cn, slugify } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -34,6 +44,14 @@ type Rule = {
   title: string;
   description: string | null;
   displayOrder: number;
+};
+
+type EventInfo = {
+  id: string;
+  startTime: string;
+  endTime: string;
+  participantCount: number;
+  isParticipating: boolean;
 };
 
 type CommunityPost = {
@@ -49,6 +67,7 @@ type CommunityPost = {
   authorId: string;
   authorHandle: string;
   flair: { name: string; colorHex: string | null } | null;
+  event: EventInfo | null;
 };
 
 type Moderator = {
@@ -106,6 +125,98 @@ function formatRelativeDate(dateString: string) {
     month: "short",
     year: "numeric",
   }).format(date);
+}
+
+// ─── Community Post Composer ──────────────────────────────────────────────────
+
+function CommunityPostComposer({ communityId }: { communityId: string }) {
+  const [isExpanded, setIsExpanded] = useState(false);
+  const [title, setTitle] = useState("");
+  const [body, setBody] = useState("");
+  const [status, setStatus] = useState<{ type: "error" | "success"; text: string } | null>(null);
+  const [isPending, startPostTransition] = useTransition();
+
+  function handleSubmit() {
+    if (!title.trim()) {
+      setStatus({ type: "error", text: "Title is required." });
+      return;
+    }
+    setStatus(null);
+    startPostTransition(async () => {
+      const fd = new FormData();
+      fd.set("title", title.trim());
+      fd.set("body", body.trim());
+      fd.set("communityId", communityId);
+      const result = await createPostAction({}, fd);
+      if (result.error) {
+        setStatus({ type: "error", text: result.error });
+        return;
+      }
+      setTitle("");
+      setBody("");
+      setIsExpanded(false);
+      setStatus({ type: "success", text: result.success ?? "Post published." });
+      setTimeout(() => setStatus(null), 3000);
+    });
+  }
+
+  return (
+    <div className="rounded-xl border border-border bg-card overflow-hidden">
+      {!isExpanded ? (
+        <button
+          onClick={() => setIsExpanded(true)}
+          className="w-full flex items-center gap-3 px-4 py-3 text-left hover:bg-muted/40 transition-colors"
+        >
+          <div className="h-8 w-8 rounded-full bg-muted flex items-center justify-center shrink-0">
+            <Plus className="h-4 w-4 text-muted-foreground" />
+          </div>
+          <span className="text-sm text-muted-foreground">What&apos;s on your mind?</span>
+        </button>
+      ) : (
+        <div className="flex flex-col gap-3 p-4">
+          <input
+            autoFocus
+            type="text"
+            placeholder="Title"
+            value={title}
+            onChange={(e) => setTitle(e.target.value)}
+            maxLength={300}
+            disabled={isPending}
+            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm font-medium placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50"
+          />
+          <textarea
+            placeholder="Body (optional)"
+            value={body}
+            onChange={(e) => setBody(e.target.value)}
+            rows={4}
+            disabled={isPending}
+            className="w-full rounded-lg border border-input bg-background px-3 py-2 text-sm placeholder:text-muted-foreground focus:outline-none focus:ring-2 focus:ring-ring disabled:opacity-50 resize-none"
+          />
+          {status && (
+            <p className={cn("text-sm", status.type === "error" ? "text-destructive" : "text-emerald-600 dark:text-emerald-400")}>
+              {status.text}
+            </p>
+          )}
+          <div className="flex gap-2 justify-end">
+            <Button
+              size="sm"
+              variant="ghost"
+              disabled={isPending}
+              onClick={() => { setIsExpanded(false); setTitle(""); setBody(""); setStatus(null); }}
+            >
+              Cancel
+            </Button>
+            <Button size="sm" disabled={isPending || !title.trim()} onClick={handleSubmit}>
+              {isPending ? "Posting…" : "Post"}
+            </Button>
+          </div>
+        </div>
+      )}
+      {!isExpanded && status?.type === "success" && (
+        <p className="px-4 pb-3 text-sm text-emerald-600 dark:text-emerald-400">{status.text}</p>
+      )}
+    </div>
+  );
 }
 
 // ─── Auth Modal ────────────────────────────────────────────────────────────────
@@ -193,10 +304,19 @@ function CommunityPostCard({
   currentUserId: string | null;
   onGuestAction: () => void;
 }) {
+  const isOwner = currentUserId === post.authorId;
   const [myVote, setMyVote] = useState<1 | -1 | null>(post.myVote);
   const [upvotes, setUpvotes] = useState(post.upvotes);
   const [downvotes, setDownvotes] = useState(post.downvotes);
   const [isVoting, startVoteTransition] = useTransition();
+  const [isRsvping, startRsvpTransition] = useTransition();
+  const [eventState, setEventState] = useState(post.event);
+  const [isEditing, setIsEditing] = useState(false);
+  const [isSaving, setIsSaving] = useState(false);
+  const [isDeleting, setIsDeleting] = useState(false);
+  const [actionError, setActionError] = useState<string | null>(null);
+  const [draftTitle, setDraftTitle] = useState(post.title);
+  const [draftBody, setDraftBody] = useState(post.body ?? "");
 
   const score = upvotes - downvotes;
   const postUrl = `/communities/${communityName}/comments/${post.id}/${slugify(post.title)}`;
@@ -239,6 +359,50 @@ function CommunityPostCard({
         setUpvotes(prevUp);
         setDownvotes(prevDown);
       }
+    });
+  }
+
+  function handleRsvp() {
+    if (!currentUserId) { onGuestAction(); return; }
+    if (!eventState) return;
+    const prev = eventState;
+    setEventState({
+      ...eventState,
+      isParticipating: !eventState.isParticipating,
+      participantCount: eventState.isParticipating
+        ? eventState.participantCount - 1
+        : eventState.participantCount + 1,
+    });
+    startRsvpTransition(async () => {
+      const result = await rsvpEventAction(eventState.id, communityName);
+      if (result.error) setEventState(prev);
+    });
+  }
+
+  function handleEditSubmit() {
+    const formData = new FormData();
+    formData.set("postId", post.id);
+    formData.set("title", draftTitle);
+    formData.set("body", draftBody);
+    setIsSaving(true);
+    setActionError(null);
+    startTransition(async () => {
+      const result = await updatePostAction(formData);
+      setIsSaving(false);
+      if (result.error) { setActionError(result.error); return; }
+      setIsEditing(false);
+    });
+  }
+
+  function handleDelete() {
+    const formData = new FormData();
+    formData.set("postId", post.id);
+    setIsDeleting(true);
+    setActionError(null);
+    startTransition(async () => {
+      const result = await deletePostAction(formData);
+      setIsDeleting(false);
+      if (result.error) setActionError(result.error);
     });
   }
 
@@ -323,30 +487,127 @@ function CommunityPostCard({
           )}
         </div>
 
-        {/* Title */}
-        <h3 className="text-sm font-semibold leading-snug text-foreground">
-          <Link href={postUrl} className="hover:underline">
-            {post.title}
-          </Link>
-        </h3>
-
-        {/* Body preview */}
-        {post.body && (
-          <p className="text-xs text-muted-foreground line-clamp-2 leading-relaxed">
-            {post.body}
-          </p>
+        {/* Title / edit form */}
+        {isEditing ? (
+          <div className="space-y-2">
+            <Input
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              maxLength={120}
+              className="h-9 bg-background text-sm"
+            />
+            <textarea
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
+              maxLength={2000}
+              rows={4}
+              className="flex min-h-24 w-full rounded-xl border bg-background px-3 py-2 text-sm shadow-xs outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleEditSubmit}
+                disabled={isSaving || draftTitle.trim().length < 3}
+              >
+                {isSaving ? "Saving…" : "Save"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setDraftTitle(post.title);
+                  setDraftBody(post.body ?? "");
+                  setActionError(null);
+                  setIsEditing(false);
+                }}
+                disabled={isSaving}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
+        ) : (
+          <>
+            <h3 className="text-sm font-semibold leading-snug text-foreground">
+              <Link href={postUrl} className="hover:underline">
+                {post.title}
+              </Link>
+            </h3>
+            {post.body && (
+              <MarkdownContent
+                preview
+                content={post.body}
+                className="text-xs text-muted-foreground line-clamp-2"
+              />
+            )}
+          </>
         )}
 
+        {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+
         {/* Footer */}
-        <div className="mt-1 flex items-center gap-3 text-xs text-muted-foreground">
-          <Link
-            href={postUrl}
-            className="flex items-center gap-1 transition-colors hover:text-foreground"
-          >
-            <MessageSquare className="h-3.5 w-3.5" />
-            {post.commentCount}{" "}
-            {post.commentCount === 1 ? "comment" : "comments"}
-          </Link>
+        <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3">
+            <Link
+              href={postUrl}
+              className="flex items-center gap-1 transition-colors hover:text-foreground"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              {post.commentCount}{" "}
+              {post.commentCount === 1 ? "comment" : "comments"}
+            </Link>
+            {eventState && (
+              <button
+                onClick={handleRsvp}
+                disabled={isRsvping || !currentUserId}
+                className={cn(
+                  "flex items-center gap-1 transition-colors disabled:pointer-events-none disabled:opacity-50",
+                  eventState.isParticipating
+                    ? "font-medium text-primary"
+                    : "hover:text-foreground"
+                )}
+              >
+                {eventState.isParticipating
+                  ? <CalendarCheck className="h-3.5 w-3.5" />
+                  : <Calendar className="h-3.5 w-3.5" />
+                }
+                {eventState.isParticipating ? "Going" : "RSVP"}
+                {eventState.participantCount > 0 && (
+                  <span>· {eventState.participantCount}</span>
+                )}
+              </button>
+            )}
+          </div>
+
+          {isOwner && !isEditing && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <button
+                  className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                  aria-label="Post options"
+                >
+                  <Ellipsis className="h-3.5 w-3.5" />
+                </button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  onClick={() => { setActionError(null); setIsEditing(true); }}
+                >
+                  Edit post
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={handleDelete}
+                  disabled={isDeleting}
+                  className="text-destructive focus:text-destructive"
+                >
+                  {isDeleting ? "Deleting…" : "Delete post"}
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
         </div>
       </div>
     </article>
@@ -746,6 +1007,11 @@ export function CommunityPageClient({
             <div className="flex flex-col gap-4 min-w-0">
               {/* Sort tabs */}
               <SortTabs currentSort={currentSort} communityName={community.name} />
+
+              {/* Create post — members only */}
+              {session?.user && memberState && (
+                <CommunityPostComposer communityId={community.id} />
+              )}
 
               {/* Pinned posts */}
               {pinnedPosts.map((post) => (

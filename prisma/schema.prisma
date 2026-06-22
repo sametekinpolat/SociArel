@@ -400,7 +400,8 @@ model Comment {
   upvotes         Int      @default(0)
   downvotes       Int      @default(0)
   isDeleted       Boolean  @default(false)
-  
+  removedByMod    Boolean  @default(false)
+
   searchVector    Unsupported("tsvector")?
 
   createdAt       DateTime @default(now())

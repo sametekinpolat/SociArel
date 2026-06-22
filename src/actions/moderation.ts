@@ -133,6 +133,133 @@ export async function dismissReportAction(
   }
 }
 
+export type ReportUserAction = "none" | "mute_1d" | "mute_2d" | "mute_7d" | "ban";
+
+export async function resolveReportWithActionAction(
+  reportId: string,
+  communityId: string,
+  userAction: ReportUserAction,
+  reason?: string
+): Promise<ModerationResult> {
+  const session = await auth();
+  if (!session?.user?.id) return { error: "Please log in." };
+
+  const ctx = await getModerationContext(session.user.id, communityId);
+  if (!ctx.hasAnyAccess) return { error: "Unauthorized." };
+  if (userAction !== "none" && !ctx.canRestrictUsers)
+    return { error: "You don't have permission to restrict users." };
+
+  const report = await prisma.report.findUnique({
+    where: { id: reportId },
+    select: { status: true, communityId: true, reportedUserId: true, commentId: true },
+  });
+
+  if (!report) return { error: "Report not found." };
+  if (report.communityId !== communityId)
+    return { error: "Report does not belong to this community." };
+  if (report.status !== ReportStatus.PENDING)
+    return { error: "This report has already been reviewed." };
+
+  if (userAction !== "none" && !report.reportedUserId)
+    return { error: "No user associated with this report to restrict." };
+
+  if (userAction !== "none" && report.reportedUserId) {
+    if (report.reportedUserId === session.user.id)
+      return { error: "You cannot restrict yourself." };
+
+    const restrictionType =
+      userAction === "ban" ? RestrictionType.BAN : RestrictionType.MUTE;
+    const existing = await prisma.communityRestriction.findFirst({
+      where: {
+        communityId,
+        userId: report.reportedUserId,
+        type: restrictionType,
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { id: true },
+    });
+    if (existing)
+      return {
+        error: `User already has an active ${userAction === "ban" ? "ban" : "mute"} in this community.`,
+      };
+  }
+
+  const durationDays =
+    userAction === "mute_1d" ? 1 : userAction === "mute_2d" ? 2 : userAction === "mute_7d" ? 7 : null;
+  const expiresAt = durationDays
+    ? new Date(Date.now() + durationDays * 24 * 60 * 60 * 1000)
+    : null;
+
+  try {
+    await prisma.$transaction(async (tx) => {
+      await tx.report.update({
+        where: { id: reportId },
+        data: { status: ReportStatus.RESOLVED },
+      });
+
+      if (report.commentId) {
+        await tx.comment.update({
+          where: { id: report.commentId },
+          data: { isDeleted: true, removedByMod: true },
+        });
+        await writeModLog(tx, {
+          communityId,
+          moderatorId: session.user.id,
+          action: ModActionType.REMOVE_COMMENT,
+          targetCommentId: report.commentId,
+          details: { reason: reason ?? null, via: "report_resolve" },
+        });
+      }
+
+      await writeModLog(tx, {
+        communityId,
+        moderatorId: session.user.id,
+        action: ModActionType.RESOLVE_REPORT,
+        details: { reportId, userAction },
+      });
+
+      if (userAction !== "none" && report.reportedUserId) {
+        const restrictionType =
+          userAction === "ban" ? RestrictionType.BAN : RestrictionType.MUTE;
+        const restriction = await tx.communityRestriction.create({
+          data: {
+            communityId,
+            userId: report.reportedUserId,
+            moderatorId: session.user.id,
+            type: restrictionType,
+            reason: reason ?? null,
+            expiresAt: userAction === "ban" ? null : expiresAt,
+          },
+          select: { id: true },
+        });
+        await writeModLog(tx, {
+          communityId,
+          moderatorId: session.user.id,
+          action: userAction === "ban" ? ModActionType.BAN_USER : ModActionType.MUTE_USER,
+          targetUserId: report.reportedUserId,
+          details: {
+            reason: reason ?? null,
+            restrictionId: restriction.id,
+            expiresAt: expiresAt?.toISOString() ?? null,
+          },
+        });
+      }
+    });
+
+    revalidatePath(`/communities/${communityId}/moderation`);
+    const label =
+      userAction === "none"
+        ? "Report resolved."
+        : userAction === "ban"
+        ? "Report resolved and user permanently banned."
+        : `Report resolved and user muted for ${durationDays} day${durationDays === 1 ? "" : "s"}.`;
+    return { success: label };
+  } catch (error) {
+    console.error("resolveReportWithActionAction failed", error);
+    return { error: "Something went wrong." };
+  }
+}
+
 // ─── Post Moderation ──────────────────────────────────────────────────────────
 
 export async function removePostAction(
@@ -205,7 +332,7 @@ export async function removeCommentAction(
     await prisma.$transaction(async (tx) => {
       await tx.comment.update({
         where: { id: commentId },
-        data: { isDeleted: true },
+        data: { isDeleted: true, removedByMod: true },
       });
       await writeModLog(tx, {
         communityId,

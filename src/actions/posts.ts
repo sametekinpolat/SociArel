@@ -15,6 +15,7 @@ const CreatePostSchema = z.object({
     .max(2000, "Post content is too long.")
     .optional()
     .transform((value) => value || ""),
+  communityId: z.string().optional(),
 });
 
 export type CreatePostState = {
@@ -61,16 +62,41 @@ export async function createPostAction(
   const validated = CreatePostSchema.safeParse({
     title: formData.get("title"),
     body: formData.get("body"),
+    communityId: formData.get("communityId") || undefined,
   });
 
   if (!validated.success) {
     return { error: validated.error.issues[0]?.message ?? "Post could not be created." };
   }
 
-  const { title, body } = validated.data;
+  const { title, body, communityId } = validated.data;
 
   try {
-    const community = await getOrCreateDemoCommunity(session.user.id);
+    let community: { id: string };
+
+    if (communityId) {
+      const membership = await prisma.communityMember.findUnique({
+        where: { userId_communityId: { userId: session.user.id, communityId } },
+        select: { communityId: true },
+      });
+      if (!membership) {
+        return { error: "You are not a member of that community." };
+      }
+      community = { id: communityId };
+    } else {
+      community = await getOrCreateDemoCommunity(session.user.id);
+    }
+
+    const ban = await prisma.communityRestriction.findFirst({
+      where: {
+        communityId: community.id,
+        userId: session.user.id,
+        type: "BAN",
+        OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      },
+      select: { id: true },
+    });
+    if (ban) return { error: "You are banned from this community." };
 
     // Use interactive transaction so we can reference the new post's id for self-vote.
     // Self-vote does NOT count toward post karma (see AC #58).

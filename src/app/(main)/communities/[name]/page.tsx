@@ -87,6 +87,18 @@ export default async function CommunityPage({
           select: { voteValue: true },
         },
         _count: { select: { comments: true } },
+        event: {
+          select: {
+            id: true,
+            startTime: true,
+            endTime: true,
+            _count: { select: { participants: true } },
+            participants: {
+              where: { userId: currentUserId || "00000000-0000-0000-0000-000000000000" },
+              select: { userId: true },
+            },
+          },
+        },
       },
       take: 25,
     }),
@@ -146,6 +158,15 @@ export default async function CommunityPage({
         authorHandle: p.user.username || p.user.name || "anonymous",
         flair: p.flair
           ? { name: p.flair.name, colorHex: p.flair.colorHex }
+          : null,
+        event: p.event
+          ? {
+              id: p.event.id,
+              startTime: p.event.startTime.toISOString(),
+              endTime: p.event.endTime.toISOString(),
+              participantCount: p.event._count.participants,
+              isParticipating: p.event.participants.length > 0,
+            }
           : null,
       }))}
       moderators={moderators.map((m) => ({

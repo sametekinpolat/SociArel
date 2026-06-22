@@ -4,13 +4,18 @@ import { startTransition, useEffect, useRef, useState, useTransition } from "rea
 import Link from "next/link";
 import { useSession } from "next-auth/react";
 import {
+  Calendar,
+  CalendarCheck,
   ChevronDown,
+  ChevronUp,
+  ChevronsUpDown,
   Ellipsis,
   MessageSquare,
+  Users,
   X,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
-import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,8 +28,21 @@ import {
   createPostAction,
   deletePostAction,
   updatePostAction,
+  votePostAction,
 } from "@/actions/posts";
+import { rsvpEventAction } from "@/actions/events";
 import { cn, slugify } from "@/lib/utils";
+import { MarkdownContent } from "@/components/markdown-content";
+
+type JoinedCommunity = { id: string; name: string };
+
+type EventInfo = {
+  id: string;
+  startTime: string;
+  endTime: string;
+  participantCount: number;
+  isParticipating: boolean;
+};
 
 type FeedPost = {
   id: string;
@@ -33,11 +51,13 @@ type FeedPost = {
   createdAt: string;
   upvotes: number;
   downvotes: number;
+  myVote: 1 | -1 | null;
   commentCount: number;
   communityName: string;
   authorName: string;
   authorHandle: string;
   authorId: string;
+  event: EventInfo | null;
 };
 
 function formatRelativeDate(dateString: string) {
@@ -60,7 +80,7 @@ function formatRelativeDate(dateString: string) {
   }).format(date);
 }
 
-function PostComposer() {
+function PostComposer({ joinedCommunities }: { joinedCommunities: JoinedCommunity[] }) {
   const { data: session } = useSession();
   const composerRef = useRef<HTMLDivElement>(null);
   const [isExpanded, setIsExpanded] = useState(false);
@@ -72,6 +92,7 @@ function PostComposer() {
   } | null>(null);
   const [title, setTitle] = useState("");
   const [body, setBody] = useState("");
+  const [selectedCommunity, setSelectedCommunity] = useState<JoinedCommunity | null>(null);
   const [isPending, startPostTransition] = useTransition();
 
   useEffect(() => {
@@ -105,10 +126,16 @@ function PostComposer() {
   async function submitPost(options?: { closeMobileComposer?: boolean }) {
     setStatusMessage(null);
 
+    if (joinedCommunities.length > 0 && !selectedCommunity) {
+      setStatusMessage({ type: "error", text: "Please choose a community to post in." });
+      return;
+    }
+
     startPostTransition(async () => {
       const formData = new FormData();
       formData.set("title", title);
       formData.set("body", body);
+      if (selectedCommunity) formData.set("communityId", selectedCommunity.id);
 
       const result = await createPostAction({}, formData);
 
@@ -153,7 +180,7 @@ function PostComposer() {
         <Card className="overflow-hidden border-0 bg-gradient-to-br from-sky-50 via-card to-cyan-50 shadow-sm ring-1 ring-sky-200/70 dark:from-sky-950/40 dark:via-card dark:to-cyan-950/30 dark:ring-sky-900/60">
           <CardHeader className="border-b border-sky-200/70 dark:border-sky-900/60">
             <div className="flex items-center gap-3">
-              <div className="flex h-11 w-11 items-center justify-center rounded-2xl bg-primary/15 text-sm font-semibold text-primary">
+              <div className="flex h-11 w-11 shrink-0 items-center justify-center rounded-2xl bg-primary/15 text-sm font-semibold text-primary">
                 {(
                   session.user.username?.[0] ||
                   session.user.email?.[0] ||
@@ -161,8 +188,34 @@ function PostComposer() {
                   "U"
                 ).toUpperCase()}
               </div>
-              <div className="flex-1 space-y-1">
-                <CardTitle>Create a post</CardTitle>
+              <div className="flex-1 space-y-2">
+                <div className="flex items-center justify-between">
+                  <CardTitle>Create a post</CardTitle>
+                  {joinedCommunities.length > 0 && (
+                    <DropdownMenu>
+                      <DropdownMenuTrigger asChild>
+                        <button className="flex items-center gap-1.5 rounded-lg border border-border bg-muted/30 px-3 py-1.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground">
+                          <Users className="h-3.5 w-3.5" />
+                          <span>
+                            {selectedCommunity ? `c/${selectedCommunity.name}` : "Choose community"}
+                          </span>
+                          <ChevronsUpDown className="h-3 w-3 opacity-60" />
+                        </button>
+                      </DropdownMenuTrigger>
+                      <DropdownMenuContent align="end" className="w-52">
+                        {joinedCommunities.map((c) => (
+                          <DropdownMenuItem
+                            key={c.id}
+                            onClick={() => setSelectedCommunity(c)}
+                            className={cn(selectedCommunity?.id === c.id && "font-medium text-primary")}
+                          >
+                            c/{c.name}
+                          </DropdownMenuItem>
+                        ))}
+                      </DropdownMenuContent>
+                    </DropdownMenu>
+                  )}
+                </div>
                 <Input
                   value={title}
                   onChange={(event) => {
@@ -265,6 +318,30 @@ function PostComposer() {
             }}
           >
             <div className="space-y-4">
+              {joinedCommunities.length > 0 && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button className="flex w-full items-center gap-2 rounded-lg border border-border bg-muted/30 px-3 py-2.5 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted/60 hover:text-foreground">
+                      <Users className="h-4 w-4 shrink-0" />
+                      <span className="flex-1 text-left">
+                        {selectedCommunity ? `c/${selectedCommunity.name}` : "Choose a community"}
+                      </span>
+                      <ChevronsUpDown className="h-3.5 w-3.5 opacity-60" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent className="w-[--radix-dropdown-menu-trigger-width]">
+                    {joinedCommunities.map((c) => (
+                      <DropdownMenuItem
+                        key={c.id}
+                        onClick={() => setSelectedCommunity(c)}
+                        className={cn(selectedCommunity?.id === c.id && "font-medium text-primary")}
+                      >
+                        c/{c.name}
+                      </DropdownMenuItem>
+                    ))}
+                  </DropdownMenuContent>
+                </DropdownMenu>
+              )}
               <Input
                 name="title"
                 value={title}
@@ -308,6 +385,12 @@ function PostComposer() {
 function FeedPostCard({ post }: { post: FeedPost }) {
   const { data: session } = useSession();
   const isOwner = session?.user?.id === post.authorId;
+  const [myVote, setMyVote] = useState<1 | -1 | null>(post.myVote);
+  const [upvotes, setUpvotes] = useState(post.upvotes);
+  const [downvotes, setDownvotes] = useState(post.downvotes);
+  const [isVoting, startVoteTransition] = useTransition();
+  const [isRsvping, startRsvpTransition] = useTransition();
+  const [eventState, setEventState] = useState(post.event);
   const [isEditing, setIsEditing] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isDeleting, setIsDeleting] = useState(false);
@@ -315,15 +398,55 @@ function FeedPostCard({ post }: { post: FeedPost }) {
   const [draftTitle, setDraftTitle] = useState(post.title);
   const [draftBody, setDraftBody] = useState(post.body ?? "");
 
-  async function handleShare() {
-    try {
-      await navigator.clipboard.writeText(
-        `${window.location.origin}/#post-${post.id}`
-      );
-      setActionError(null);
-    } catch {
-      setActionError("Link could not be copied.");
+  const score = upvotes - downvotes;
+  const postUrl = `/communities/${post.communityName}/comments/${post.id}/${slugify(post.title)}`;
+
+  function handleVote(val: 1 | -1) {
+    if (!session?.user) return;
+
+    const prevVote = myVote;
+    const prevUp = upvotes;
+    const prevDown = downvotes;
+
+    if (myVote === val) {
+      setMyVote(null);
+      if (val === 1) setUpvotes((v) => v - 1);
+      else setDownvotes((v) => v - 1);
+    } else {
+      if (myVote !== null) {
+        if (val === 1) { setUpvotes((v) => v + 1); setDownvotes((v) => v - 1); }
+        else { setDownvotes((v) => v + 1); setUpvotes((v) => v - 1); }
+      } else {
+        if (val === 1) setUpvotes((v) => v + 1);
+        else setDownvotes((v) => v + 1);
+      }
+      setMyVote(val);
     }
+
+    startVoteTransition(async () => {
+      const result = await votePostAction(post.id, val);
+      if (result.error) {
+        setMyVote(prevVote);
+        setUpvotes(prevUp);
+        setDownvotes(prevDown);
+      }
+    });
+  }
+
+  function handleRsvp() {
+    if (!session?.user || !eventState) return;
+    const prev = eventState;
+    setEventState({
+      ...eventState,
+      isParticipating: !eventState.isParticipating,
+      participantCount: eventState.isParticipating
+        ? eventState.participantCount - 1
+        : eventState.participantCount + 1,
+    });
+    startRsvpTransition(async () => {
+      const result = await rsvpEventAction(eventState.id, post.communityName);
+      if (result.error) setEventState(prev);
+    });
   }
 
   function handleEditSubmit() {
@@ -338,10 +461,7 @@ function FeedPostCard({ post }: { post: FeedPost }) {
     startTransition(async () => {
       const result = await updatePostAction(formData);
       setIsSaving(false);
-      if (result.error) {
-        setActionError(result.error);
-        return;
-      }
+      if (result.error) { setActionError(result.error); return; }
       setIsEditing(false);
     });
   }
@@ -361,140 +481,199 @@ function FeedPostCard({ post }: { post: FeedPost }) {
   }
 
   return (
-    <Card
+    <article
       id={`post-${post.id}`}
-      className="gap-0 overflow-hidden border-0 shadow-sm ring-1 ring-black/5"
+      className="group flex gap-0 overflow-hidden rounded-xl border border-border bg-card transition-colors hover:border-border/80 hover:bg-muted/20"
     >
-      <CardHeader className="gap-3 border-b bg-gradient-to-r from-muted/40 via-card to-card">
-        <div className="flex items-start justify-between gap-4">
-          <div className="space-y-3">
-            <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-              <span className="rounded-full bg-primary/10 px-2.5 py-1 font-medium text-primary">
-                c/{post.communityName}
-              </span>
-              <span>@{post.authorHandle}</span>
-              <span>{formatRelativeDate(post.createdAt)}</span>
+      {/* Vote column */}
+      <div className="flex w-10 shrink-0 flex-col items-center gap-0.5 bg-muted/30 py-3 px-1">
+        <button
+          onClick={() => handleVote(1)}
+          disabled={isVoting || !session?.user}
+          aria-label="Upvote"
+          className={cn(
+            "rounded p-0.5 transition-colors",
+            myVote === 1
+              ? "text-primary"
+              : "text-muted-foreground hover:bg-primary/10 hover:text-primary",
+            (isVoting || !session?.user) && "pointer-events-none opacity-40"
+          )}
+        >
+          <ChevronUp className="h-4 w-4" />
+        </button>
+        <span
+          className={cn(
+            "text-xs font-semibold tabular-nums",
+            score > 0 ? "text-primary" : score < 0 ? "text-destructive" : "text-muted-foreground"
+          )}
+        >
+          {score}
+        </span>
+        <button
+          onClick={() => handleVote(-1)}
+          disabled={isVoting || !session?.user}
+          aria-label="Downvote"
+          className={cn(
+            "rounded p-0.5 transition-colors",
+            myVote === -1
+              ? "text-destructive"
+              : "text-muted-foreground hover:bg-destructive/10 hover:text-destructive",
+            (isVoting || !session?.user) && "pointer-events-none opacity-40"
+          )}
+        >
+          <ChevronDown className="h-4 w-4" />
+        </button>
+      </div>
+
+      {/* Content */}
+      <div className="flex flex-1 flex-col gap-1.5 p-3 min-w-0">
+        {/* Meta row */}
+        <div className="flex flex-wrap items-center gap-1.5 text-xs text-muted-foreground">
+          <Link
+            href={`/communities/${post.communityName}`}
+            className="font-medium text-primary hover:underline"
+          >
+            c/{post.communityName}
+          </Link>
+          <span>·</span>
+          <span>u/{post.authorHandle}</span>
+          <span>·</span>
+          <span>{formatRelativeDate(post.createdAt)}</span>
+        </div>
+
+        {/* Title / edit form */}
+        {isEditing ? (
+          <div className="space-y-2">
+            <Input
+              value={draftTitle}
+              onChange={(e) => setDraftTitle(e.target.value)}
+              maxLength={120}
+              className="h-9 bg-background text-sm"
+            />
+            <textarea
+              value={draftBody}
+              onChange={(e) => setDraftBody(e.target.value)}
+              maxLength={2000}
+              rows={4}
+              className="flex min-h-24 w-full rounded-xl border bg-background px-3 py-2 text-sm shadow-xs outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
+            />
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                size="sm"
+                onClick={handleEditSubmit}
+                disabled={isSaving || draftTitle.trim().length < 3}
+              >
+                {isSaving ? "Saving…" : "Save"}
+              </Button>
+              <Button
+                type="button"
+                variant="ghost"
+                size="sm"
+                onClick={() => {
+                  setDraftTitle(post.title);
+                  setDraftBody(post.body ?? "");
+                  setActionError(null);
+                  setIsEditing(false);
+                }}
+                disabled={isSaving}
+              >
+                Cancel
+              </Button>
             </div>
-            {isEditing ? (
-              <div className="space-y-3">
-                <Input
-                  value={draftTitle}
-                  onChange={(e) => setDraftTitle(e.target.value)}
-                  maxLength={120}
-                  className="h-11 bg-background"
-                />
-                <textarea
-                  value={draftBody}
-                  onChange={(e) => setDraftBody(e.target.value)}
-                  maxLength={2000}
-                  rows={4}
-                  className="flex min-h-28 w-full rounded-xl border bg-background px-3 py-3 text-sm shadow-xs outline-none transition-colors placeholder:text-muted-foreground focus-visible:border-ring focus-visible:ring-[3px] focus-visible:ring-ring/20"
-                />
-                <div className="flex items-center gap-2">
-                  <Button
-                    type="button"
-                    size="sm"
-                    onClick={handleEditSubmit}
-                    disabled={isSaving || draftTitle.trim().length < 3}
-                  >
-                    {isSaving ? "Saving…" : "Save"}
-                  </Button>
-                  <Button
-                    type="button"
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setDraftTitle(post.title);
-                      setDraftBody(post.body ?? "");
-                      setActionError(null);
-                      setIsEditing(false);
-                    }}
-                    disabled={isSaving}
-                  >
-                    Cancel
-                  </Button>
-                </div>
-              </div>
-            ) : (
-              <div className="space-y-2">
-                <CardTitle className="text-lg">
-                  <Link
-                    href={`/communities/${post.communityName}/comments/${post.id}/${slugify(post.title)}`}
-                    className="hover:underline"
-                  >
-                    {post.title}
-                  </Link>
-                </CardTitle>
-                {post.body && (
-                  <p className="text-sm leading-6 text-muted-foreground">
-                    {post.body}
-                  </p>
-                )}
-              </div>
+          </div>
+        ) : (
+          <>
+            <h3 className="text-sm font-semibold leading-snug text-foreground">
+              <Link href={postUrl} className="hover:underline">
+                {post.title}
+              </Link>
+            </h3>
+            {post.body && (
+              <MarkdownContent
+                preview
+                content={post.body}
+                className="text-xs text-muted-foreground line-clamp-2"
+              />
             )}
-            {actionError && (
-              <p className="text-sm text-destructive">{actionError}</p>
+          </>
+        )}
+
+        {actionError && <p className="text-xs text-destructive">{actionError}</p>}
+
+        {/* Footer */}
+        <div className="mt-1 flex items-center justify-between gap-3 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3">
+            <Link
+              href={postUrl}
+              className="flex items-center gap-1 transition-colors hover:text-foreground"
+            >
+              <MessageSquare className="h-3.5 w-3.5" />
+              {post.commentCount} {post.commentCount === 1 ? "comment" : "comments"}
+            </Link>
+            {eventState && (
+              <button
+                onClick={handleRsvp}
+                disabled={isRsvping || !session?.user}
+                className={cn(
+                  "flex items-center gap-1 transition-colors disabled:pointer-events-none disabled:opacity-50",
+                  eventState.isParticipating
+                    ? "font-medium text-primary"
+                    : "hover:text-foreground"
+                )}
+              >
+                {eventState.isParticipating
+                  ? <CalendarCheck className="h-3.5 w-3.5" />
+                  : <Calendar className="h-3.5 w-3.5" />
+                }
+                {eventState.isParticipating ? "Going" : "RSVP"}
+                {eventState.participantCount > 0 && (
+                  <span>· {eventState.participantCount}</span>
+                )}
+              </button>
             )}
           </div>
-          <div className="flex items-start gap-2">
+
+          {isOwner && !isEditing && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="h-9 w-9 rounded-full text-muted-foreground"
+                <button
+                  className="rounded p-0.5 text-muted-foreground opacity-0 transition-opacity group-hover:opacity-100 hover:text-foreground"
+                  aria-label="Post options"
                 >
-                  <Ellipsis className="h-4 w-4" />
-                </Button>
+                  <Ellipsis className="h-3.5 w-3.5" />
+                </button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end">
-                <DropdownMenuItem onClick={handleShare}>Share</DropdownMenuItem>
-                {isOwner && (
-                  <>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem
-                      onClick={() => {
-                        setActionError(null);
-                        setIsEditing(true);
-                      }}
-                    >
-                      Edit post
-                    </DropdownMenuItem>
-                    <DropdownMenuItem
-                      onClick={handleDelete}
-                      disabled={isDeleting}
-                      className="text-destructive focus:text-destructive"
-                    >
-                      {isDeleting ? "Deleting…" : "Delete post"}
-                    </DropdownMenuItem>
-                  </>
-                )}
+                <DropdownMenuItem
+                  onClick={() => { setActionError(null); setIsEditing(true); }}
+                >
+                  Edit post
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem
+                  onClick={handleDelete}
+                  disabled={isDeleting}
+                  className="text-destructive focus:text-destructive"
+                >
+                  {isDeleting ? "Deleting…" : "Delete post"}
+                </DropdownMenuItem>
               </DropdownMenuContent>
             </DropdownMenu>
-            <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-2xl bg-primary/10 text-sm font-semibold text-primary">
-              {post.authorName[0]?.toUpperCase() || "U"}
-            </div>
-          </div>
+          )}
         </div>
-      </CardHeader>
-      <CardFooter className="justify-between">
-        <div className="flex items-center gap-3 text-sm text-muted-foreground">
-          <span>{post.upvotes - post.downvotes} score</span>
-          <Link
-            href={`/communities/${post.communityName}/comments/${post.id}/${slugify(post.title)}`}
-            className="flex items-center gap-1 transition-colors hover:text-foreground"
-          >
-            <MessageSquare className="h-4 w-4" />
-            {post.commentCount} comments
-          </Link>
-        </div>
-        <p className="text-xs text-muted-foreground">Saved in PostgreSQL</p>
-      </CardFooter>
-    </Card>
+      </div>
+    </article>
   );
 }
 
-export function HomePageClient({ posts }: { posts: FeedPost[] }) {
+export function HomePageClient({
+  posts,
+  joinedCommunities,
+}: {
+  posts: FeedPost[];
+  joinedCommunities: JoinedCommunity[];
+}) {
   return (
     <div className="min-h-full bg-[radial-gradient(circle_at_top,_rgba(14,165,233,0.08),_transparent_28%),linear-gradient(to_bottom,_transparent,_rgba(148,163,184,0.06))]">
       <div className="mx-auto max-w-2xl space-y-6 p-4 md:p-6">
@@ -502,7 +681,7 @@ export function HomePageClient({ posts }: { posts: FeedPost[] }) {
           <h1 className="font-heading text-3xl font-semibold tracking-tight">
             Home feed
           </h1>
-          <PostComposer />
+          <PostComposer joinedCommunities={joinedCommunities} />
         </section>
 
         <section className="space-y-4">
